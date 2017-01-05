@@ -11,9 +11,9 @@ function normalize(str) {
  * Finds the literals containing templates
  */
 function findTemplates(program) {
-  return program.find(j.Literal).filter((nodePath) => { 
-    let matchesTypes = typeof nodePath.node.value === 'string' &&
-      j.Property.check(nodePath.parent.node) &&
+  return program.find(j.Literal).filter((nodePath) => {
+    if (typeof nodePath.node.value !== 'string') return false;
+    let matchesTypes = j.Property.check(nodePath.parent.node) &&
       nodePath.parent.node.key.name === "block" &&
       j.ObjectExpression.check(nodePath.parent.parent.node) &&
       j.CallExpression.check(nodePath.parent.parent.parent.node) &&
@@ -36,8 +36,8 @@ function findTemplates(program) {
  */
 function findStringLiterals(program) {
   return program.find(j.Literal).filter((nodePath) => {
-    let matchesTypes = typeof nodePath.node.value === 'string' &&
-      j.Property.check(nodePath.parent.node) &&
+    if (typeof nodePath.node.value !== 'string') return false;
+    let matchesTypes = j.Property.check(nodePath.parent.node) &&
       nodePath.parent.node.key.name === "block" &&
       j.ObjectExpression.check(nodePath.parent.parent.node) &&
       j.CallExpression.check(nodePath.parent.parent.parent.node) &&
@@ -201,6 +201,11 @@ AssetRewrite.prototype.processString = function (string, relativePath) {
 };
 
 function replaceValueAt(ary, index, assetMapKeys, assetMap) {
+  if (typeof ary[index] !== 'string') {
+    // Todo: this is wrong, I should only call this function once I know this ary[index] is
+    // a string, otherwise it should be a recursive call
+    return;
+  }
   let value = assetMap[ary[index].slice(1)];
   if (value) {
     ary[index] = value;
@@ -208,7 +213,7 @@ function replaceValueAt(ary, index, assetMapKeys, assetMap) {
     for(let i = 0; i < assetMapKeys.length; i++) {
       let oldStr = assetMapKeys[i];
       let newStr = assetMap[oldStr];
-      ary[index] = ary[index].replace(oldStr, newStr);
+        ary[index] = ary[index].replace(oldStr, newStr);
     }
   }
 }
