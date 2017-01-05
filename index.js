@@ -1,9 +1,58 @@
 var Filter = require('broccoli-filter');
 var path = require('path');
 var Cache = require('broccoli-filter/lib/cache');
+var j = require('jscodeshift');
 
 function normalize(str) {
   return str.replace(/[\\\/]+/g, '/');
+}
+
+/**
+ * Finds the literals containing templates
+ */
+function findTemplates(program) {
+  return program.find(j.Literal).filter((nodePath) => { 
+    let matchesTypes = typeof nodePath.node.value === 'string' &&
+      j.Property.check(nodePath.parent.node) &&
+      nodePath.parent.node.key.name === "block" &&
+      j.ObjectExpression.check(nodePath.parent.parent.node) &&
+      j.CallExpression.check(nodePath.parent.parent.parent.node) &&
+      j.AssignmentExpression.check(nodePath.parent.parent.parent.parent.node);
+    if (matchesTypes) {
+      let rhs = nodePath.parent.parent.parent.parent.node.right;
+      return j.MemberExpression.check(rhs.callee) &&
+        rhs.callee.property.name === "template" &&
+        j.MemberExpression.check(rhs.callee.object) &&
+        rhs.callee.object.property.name === "HTMLBars" &&
+        rhs.callee.object.object.name === "Ember";
+    } else {
+      return false;
+    }
+  })
+}
+
+/**
+ * Finds the literals that DO NOT contain templates
+ */
+function findStringLiterals(program) {
+  return program.find(j.Literal).filter((nodePath) => {
+    let matchesTypes = typeof nodePath.node.value === 'string' &&
+      j.Property.check(nodePath.parent.node) &&
+      nodePath.parent.node.key.name === "block" &&
+      j.ObjectExpression.check(nodePath.parent.parent.node) &&
+      j.CallExpression.check(nodePath.parent.parent.parent.node) &&
+      j.AssignmentExpression.check(nodePath.parent.parent.parent.parent.node);
+    if (matchesTypes) {
+      let rhs = nodePath.parent.parent.parent.parent.node.right;
+      return !j.MemberExpression.check(rhs.callee) &&
+        rhs.callee.property.name === "template" &&
+        j.MemberExpression.check(rhs.callee.object) &&
+        rhs.callee.object.property.name === "HTMLBars" &&
+        rhs.callee.object.object.name === "Ember";
+    } else {
+      return true;
+    }
+  })
 }
 
 function relative(a, b) {
@@ -139,6 +188,8 @@ AssetRewrite.prototype.rewriteAssetPath = function (string, assetPath, replaceme
   });
 };
 
+
+
 AssetRewrite.prototype.processString = function (string, relativePath) {
   if (/\.js$/.test(relativePath)) {
     return this.processJS(string, relativePath);
@@ -149,8 +200,59 @@ AssetRewrite.prototype.processString = function (string, relativePath) {
   }
 };
 
+function replaceValueAt(ary, index, assetMapKeys, assetMap) {
+  let value = assetMap[ary[index].slice(1)];
+  if (value) {
+    ary[index] = value;
+  } else {
+    for(let i = 0; i < assetMapKeys.length; i++) {
+      let oldStr = assetMapKeys[i];
+      let newStr = assetMap[oldStr];
+      ary[index] = ary[index].replace(oldStr, newStr);
+    }
+  }
+}
+
 AssetRewrite.prototype.processJS = function(string, relativePath) {
-  return string;
+  let root = j(string);
+  findTemplates(root).replaceWith((nodePath) => { 
+    let template = JSON.parse(nodePath.node.rawValue);
+    template.statements.forEach((stat) => {
+      if (stat[0] === 'static-attr') {
+        replaceValueAt(stat, 2, this.assetMapKeys, this.assetMap);
+      } else if (stat[0] === 'append') {
+        let [type, _name, args, options] = stat[1];
+        if (type !== 'helper') return;
+        if (args) {
+          for(let i = 0; i < args.length; i++) {
+            replaceValueAt(args, i, this.assetMapKeys, this.assetMap);
+          }
+        }
+        if (options) {
+          for(let i = 0; i < options[0].length; i++) {
+            let key = options[0][i];
+            if (!Array.isArray(options[1][0])) {
+              replaceValueAt(options[1], 0, this.assetMapKeys, this.assetMap);
+            }
+          }
+        }
+      }
+    });
+    return JSON.stringify(template);
+  });
+  findStringLiterals(root).forEach((nodePath) => {
+    let newValue = this.assetMap[nodePath.node.value];
+    if (newValue) {
+      nodePath.node.value = newValue;
+    } else {
+      for(let i = 0; i < this.assetMapKeys.length; i++) {
+        let oldStr = this.assetMapKeys[i];
+        let newStr = this.assetMap[oldStr];
+        nodePath.node.value = nodePath.node.value.replace(oldStr, newStr);
+      }
+    } 
+  });  
+  return root.toSource();
 }
 
 AssetRewrite.prototype.processCSS = function(string, relativePath) {
